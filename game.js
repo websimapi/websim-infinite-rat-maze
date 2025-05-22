@@ -45,6 +45,11 @@ async function initGame() {
     await loadChunk(0, 0);
     updateProgressBar(90);
     
+    // Find a valid position for the rat in the initial chunk
+    const validPosition = findValidRatPosition(mazeChunks['0,0'], myRat.x, myRat.y);
+    myRat.x = validPosition.x;
+    myRat.y = validPosition.y;
+    
     // Update presence with initial rat state
     room.updatePresence({
         ratState: {
@@ -478,35 +483,6 @@ function calculateRatSpeed() {
     return speed;
 }
 
-function isColliding(x, y) {
-    const currentChunkId = `${myRat.chunkX},${myRat.chunkY}`;
-    const chunk = mazeChunks[currentChunkId];
-    
-    if (!chunk) return true; // Consider out of bounds as a collision
-    
-    // Check collision with walls
-    for (const wall of chunk.walls) {
-        const wallX = wall.x * tileSize;
-        const wallY = wall.y * tileSize;
-        
-        if (wall.dir === 'horizontal') {
-            // Horizontal wall segment
-            if (y + RAT_SIZE/2 > wallY - 2 && y - RAT_SIZE/2 < wallY + 2 &&
-                x + RAT_SIZE/2 > wallX && x - RAT_SIZE/2 < wallX + tileSize) {
-                return true;
-            }
-        } else {
-            // Vertical wall segment
-            if (x + RAT_SIZE/2 > wallX - 2 && x - RAT_SIZE/2 < wallX + 2 &&
-                y + RAT_SIZE/2 > wallY && y - RAT_SIZE/2 < wallY + tileSize) {
-                return true;
-            }
-        }
-    }
-    
-    return false;
-}
-
 async function checkChunkTransition() {
     let newChunkX = myRat.chunkX;
     let newChunkY = myRat.chunkY;
@@ -539,12 +515,107 @@ async function checkChunkTransition() {
         myRat.chunkX = newChunkX;
         myRat.chunkY = newChunkY;
         
+        // Ensure the rat is placed in a valid position in the new chunk
+        const chunkId = `${newChunkX},${newChunkY}`;
+        if (mazeChunks[chunkId]) {
+            const validPosition = findValidRatPosition(mazeChunks[chunkId], myRat.x, myRat.y);
+            myRat.x = validPosition.x;
+            myRat.y = validPosition.y;
+        }
+        
         // Also load adjacent chunks for seamless transitions
         loadChunk(newChunkX - 1, newChunkY);
         loadChunk(newChunkX + 1, newChunkY);
         loadChunk(newChunkX, newChunkY - 1);
         loadChunk(newChunkX, newChunkY + 1);
     }
+}
+
+function findValidRatPosition(chunk, startX, startY) {
+    // If the starting position is valid, use it
+    if (!isCollidingAt(startX, startY, chunk)) {
+        return { x: startX, y: startY };
+    }
+    
+    // If not, use breadth-first search to find a valid position
+    const queue = [];
+    const visited = new Set();
+    const startKey = `${Math.floor(startX/10)},${Math.floor(startY/10)}`;
+    
+    // Start with the center of the chunk as an alternative
+    queue.push({ x: chunkSize/2, y: chunkSize/2 });
+    
+    // Try positions near the exits
+    if (chunk.exits.north) queue.push({ x: chunkSize/2, y: tileSize + RAT_SIZE });
+    if (chunk.exits.south) queue.push({ x: chunkSize/2, y: chunkSize - tileSize - RAT_SIZE });
+    if (chunk.exits.east) queue.push({ x: chunkSize - tileSize - RAT_SIZE, y: chunkSize/2 });
+    if (chunk.exits.west) queue.push({ x: tileSize + RAT_SIZE, y: chunkSize/2 });
+    
+    // Then try the original position
+    queue.push({ x: startX, y: startY });
+    visited.add(startKey);
+    
+    // Check grid points in the chunk (10px resolution to speed up search)
+    const gridSize = chunkSize / 10;
+    for (let y = 0; y < gridSize; y++) {
+        for (let x = 0; x < gridSize; x++) {
+            const posX = x * 10 + 5;
+            const posY = y * 10 + 5;
+            const key = `${x},${y}`;
+            
+            if (!visited.has(key)) {
+                queue.push({ x: posX, y: posY });
+                visited.add(key);
+            }
+        }
+    }
+    
+    // Process the queue
+    for (const pos of queue) {
+        if (!isCollidingAt(pos.x, pos.y, chunk)) {
+            return pos;
+        }
+    }
+    
+    // If no valid position found, return the center of the chunk as a last resort
+    return { x: chunkSize/2, y: chunkSize/2 };
+}
+
+function isCollidingAt(x, y, chunk) {
+    if (!chunk) return true; // Consider out of bounds as a collision
+    
+    // Check collision with walls
+    for (const wall of chunk.walls) {
+        const wallX = wall.x * tileSize;
+        const wallY = wall.y * tileSize;
+        
+        if (wall.dir === 'horizontal') {
+            // Horizontal wall segment
+            if (y + RAT_SIZE/2 > wallY - 2 && y - RAT_SIZE/2 < wallY + 2 &&
+                x + RAT_SIZE/2 > wallX && x - RAT_SIZE/2 < wallX + tileSize) {
+                return true;
+            }
+        } else {
+            // Vertical wall segment
+            if (x + RAT_SIZE/2 > wallX - 2 && x - RAT_SIZE/2 < wallX + 2 &&
+                y + RAT_SIZE/2 > wallY && y - RAT_SIZE/2 < wallY + tileSize) {
+                return true;
+            }
+        }
+    }
+    
+    // Also check if position is out of bounds for the chunk
+    if (x < 0 || x > chunkSize || y < 0 || y > chunkSize) {
+        return true;
+    }
+    
+    return false;
+}
+
+function isColliding(x, y) {
+    const currentChunkId = `${myRat.chunkX},${myRat.chunkY}`;
+    const chunk = mazeChunks[currentChunkId];
+    return isCollidingAt(x, y, chunk);
 }
 
 function render() {
