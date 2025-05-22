@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infinite Rat Maze</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+            background-color: #333;
+            color: white;
+        }
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        #maze-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            cursor: pointer;
+        }
+        #ui-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 10;
+        }
+        #rat-stats {
+            display: flex;
+            gap: 20px;
+        }
+        .stat {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .stat-bar {
+            width: 60px;
+            height: 8px;
+            background-color: #444;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 3px;
+        }
+        .stat-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+        .energy-fill {
+            background-color: #ffc107;
+        }
+        .hydration-fill {
+            background-color: #2196f3;
+        }
+        .alertness-fill {
+            background-color: #f44336;
+        }
+        #loading-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: #222;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        #loading-progress {
+            width: 300px;
+            height: 20px;
+            background-color: #444;
+            border-radius: 10px;
+            margin-top: 20px;
+            overflow: hidden;
+        }
+        #progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #4CAF50;
+            transition: width 0.3s ease;
+        }
+        #players-container {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 10;
+        }
+        .player {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .player-avatar {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-screen">
+        <h2>Generating your rat...</h2>
+        <div id="loading-progress">
+            <div id="progress-bar"></div>
+        </div>
+    </div>
+    <div id="game-container">
+        <canvas id="maze-canvas"></canvas>
+        <div id="ui-container">
+            <div id="rat-stats">
+                <div class="stat">
+                    <span>Energy</span>
+                    <div class="stat-bar"><div id="energy-fill" class="stat-fill energy-fill"></div></div>
+                </div>
+                <div class="stat">
+                    <span>Hydration</span>
+                    <div class="stat-bar"><div id="hydration-fill" class="stat-fill hydration-fill"></div></div>
+                </div>
+                <div class="stat">
+                    <span>Alertness</span>
+                    <div class="stat-bar"><div id="alertness-fill" class="stat-fill alertness-fill"></div></div>
+                </div>
+            </div>
+        </div>
+        <div id="players-container"></div>
+    </div>
+    <script src="game.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
+
