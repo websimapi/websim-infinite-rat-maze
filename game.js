@@ -12,23 +12,36 @@ let keysPressed = {};
 let lastTimestamp = 0;
 const RAT_SIZE = 40;
 
+// Game resources
+let cheeseImage = null;
+let waterImage = null;
+let resourceSpawns = {}; // Store resources for each chunk
+
+// AI control flag
+let aiControlEnabled = false;
+let aiControlButton = null;
+
 // Game initialization
 async function initGame() {
     canvas = document.getElementById('maze-canvas');
     ctx = canvas.getContext('2d');
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
-    
+
     // Generate player's rat with transparent background
     await generateRat();
+    updateProgressBar(40);
+
+    // Load game resources
+    await loadResources();
     updateProgressBar(50);
-    
+
     // Initialize room connection
     await room.initialize();
     updateProgressBar(70);
-    
+
     setupEventListeners();
-    
+
     // Initialize player's rat state
     myRat = {
         x: 0,
@@ -38,18 +51,37 @@ async function initGame() {
         energy: 100,
         hydration: 100,
         alertness: 50,
-        lastUpdate: Date.now()
+        lastUpdate: Date.now(),
+        // AI state variables
+        aiEnabled: false,
+        aiState: {
+            currentGoal: 'wander', // wander, seek_food, seek_water, flee
+            targetX: null,
+            targetY: null,
+            targetChunkX: null,
+            targetChunkY: null,
+            wanderDirection: Math.random() * Math.PI * 2,
+            wanderTimer: 0,
+            pathfindingNodes: [],
+            lastDecisionTime: 0,
+            memoryMap: {}, // Remember interesting locations
+            fleeTarget: null,
+            stuckTimer: 0
+        }
     };
-    
+
     // Load initial chunk
     await loadChunk(0, 0);
     updateProgressBar(90);
-    
+
     // Find a valid position for the rat in the initial chunk
     const validPosition = findValidRatPosition(mazeChunks['0,0'], myRat.x, myRat.y);
     myRat.x = validPosition.x;
     myRat.y = validPosition.y;
-    
+
+    // Create AI control button
+    createAIControlButton();
+
     // Update presence with initial rat state
     room.updatePresence({
         ratState: {
@@ -59,124 +91,181 @@ async function initGame() {
             chunkY: myRat.chunkY,
             energy: myRat.energy,
             hydration: myRat.hydration,
-            alertness: myRat.alertness
+            alertness: myRat.alertness,
+            aiEnabled: myRat.aiEnabled
         },
         ratImageUrl: myRatImage.src
     });
-    
+
     // Subscribe to presence updates
     room.subscribePresence(handlePresenceUpdate);
-    
+
+    // Generate resources for the initial chunk
+    await generateResourcesForChunk(0, 0);
+
     // Hide loading screen
     setTimeout(() => {
         document.getElementById('loading-screen').style.display = 'none';
     }, 500);
-    
+
     // Start game loop
     requestAnimationFrame(gameLoop);
 }
 
-function resizeCanvas() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+// ... existing code ...
+
+async function loadResources() {
+    // Load cheese image
+    cheeseImage = new Image();
+    cheeseImage.src = 'cheese.png';
+
+    // Load water image
+    waterImage = new Image();
+    waterImage.src = 'water_drop.png';
+
+    // Wait for images to load
+    return Promise.all([
+        new Promise(resolve => cheeseImage.onload = resolve),
+        new Promise(resolve => waterImage.onload = resolve)
+    ]);
 }
 
-async function generateRat() {
-    updateProgressBar(10);
-    try {
-        // Generate a unique rat image using AI
-        const result = await websim.imageGen({
-            prompt: "Cartoon rat character, cute, detailed, front view, white background",
-            transparent: true
-        });
-        updateProgressBar(30);
-        
-        // Load the generated image
-        myRatImage = new Image();
-        myRatImage.src = result.url;
-        
-        return new Promise((resolve) => {
-            myRatImage.onload = () => {
-                resolve();
-            };
-        });
-    } catch (error) {
-        console.error("Failed to generate rat image:", error);
-        // Fallback to a default rat image
-        myRatImage = new Image();
-        myRatImage.src = "https://via.placeholder.com/40";
-        return new Promise((resolve) => {
-            myRatImage.onload = resolve;
-        });
+function createAIControlButton() {
+    // Create a button to toggle AI control
+    aiControlButton = document.createElement('button');
+    aiControlButton.textContent = 'Enable AI Control';
+    aiControlButton.style.position = 'absolute';
+    aiControlButton.style.bottom = '20px';
+    aiControlButton.style.left = '20px';
+    aiControlButton.style.padding = '10px';
+    aiControlButton.style.backgroundColor = '#4CAF50';
+    aiControlButton.style.color = 'white';
+    aiControlButton.style.border = 'none';
+    aiControlButton.style.borderRadius = '5px';
+    aiControlButton.style.cursor = 'pointer';
+    aiControlButton.style.zIndex = '100';
+
+    aiControlButton.addEventListener('click', toggleAIControl);
+
+    document.getElementById('game-container').appendChild(aiControlButton);
+}
+
+function toggleAIControl() {
+    myRat.aiEnabled = !myRat.aiEnabled;
+    aiControlButton.textContent = myRat.aiEnabled ? 'Disable AI Control' : 'Enable AI Control';
+    aiControlButton.style.backgroundColor = myRat.aiEnabled ? '#f44336' : '#4CAF50';
+
+    // Reset AI state when enabling
+    if (myRat.aiEnabled) {
+        myRat.aiState.currentGoal = 'wander';
+        myRat.aiState.wanderDirection = Math.random() * Math.PI * 2;
+        myRat.aiState.lastDecisionTime = Date.now();
     }
+
+    // Update presence to inform other clients
+    room.updatePresence({
+        ratState: {
+            x: myRat.x,
+            y: myRat.y,
+            chunkX: myRat.chunkX,
+            chunkY: myRat.chunkY,
+            energy: myRat.energy,
+            hydration: myRat.hydration,
+            alertness: myRat.alertness,
+            aiEnabled: myRat.aiEnabled
+        },
+        ratImageUrl: myRatImage.src
+    });
 }
 
-function updateProgressBar(percent) {
-    document.getElementById('progress-bar').style.width = `${percent}%`;
-}
+async function generateResourcesForChunk(chunkX, chunkY) {
+    const chunkId = `${chunkX},${chunkY}`;
 
-function setupEventListeners() {
-    // Keyboard controls
-    window.addEventListener('keydown', (e) => {
-        keysPressed[e.key] = true;
-    });
-    
-    window.addEventListener('keyup', (e) => {
-        keysPressed[e.key] = false;
-    });
-    
-    // Mouse click to startle rats
-    canvas.addEventListener('click', (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const clickX = e.clientX - rect.left + cameraX;
-        const clickY = e.clientY - rect.top + cameraY;
-        
-        // Send a startle event to all rats within range
-        room.send({
-            type: "startle",
-            x: clickX,
-            y: clickY,
-            radius: 150
-        });
-        
-        // Startle own rat if within range
-        const dx = clickX - (myRat.x + chunkSize * myRat.chunkX);
-        const dy = clickY - (myRat.y + chunkSize * myRat.chunkY);
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance < 150) {
-            myRat.alertness = Math.min(100, myRat.alertness + 50);
-            updateRatStats();
-        }
-    });
-    
-    // Handle startle events
-    room.onmessage = (event) => {
-        const data = event.data;
-        if (data.type === "startle") {
-            const dx = data.x - (myRat.x + chunkSize * myRat.chunkX);
-            const dy = data.y - (myRat.y + chunkSize * myRat.chunkY);
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            
-            if (distance < data.radius) {
-                myRat.alertness = Math.min(100, myRat.alertness + 50);
-                updateRatStats();
+    // Check if resources already exist for this chunk
+    if (resourceSpawns[chunkId]) {
+        return;
+    }
+
+    // Create resources for the chunk
+    const resources = [];
+
+    // Generate 2-4 food (cheese) items
+    const foodCount = Math.floor(Math.random() * 3) + 2;
+    for (let i = 0; i < foodCount; i++) {
+        let x, y;
+        let validPosition = false;
+
+        // Find a valid position for the food
+        for (let attempts = 0; attempts < 20 && !validPosition; attempts++) {
+            x = Math.random() * (chunkSize - 60) + 30;
+            y = Math.random() * (chunkSize - 60) + 30;
+
+            // Check if the position is valid (not in a wall)
+            if (!isCollidingAt(x, y, mazeChunks[chunkId])) {
+                validPosition = true;
             }
         }
-    };
+
+        if (validPosition) {
+            resources.push({
+                type: 'food',
+                x: x,
+                y: y,
+                value: 50 + Math.random() * 30 // Energy value
+            });
+        }
+    }
+
+    // Generate 1-3 water sources
+    const waterCount = Math.floor(Math.random() * 3) + 1;
+    for (let i = 0; i < waterCount; i++) {
+        let x, y;
+        let validPosition = false;
+
+        // Find a valid position for the water
+        for (let attempts = 0; attempts < 20 && !validPosition; attempts++) {
+            x = Math.random() * (chunkSize - 60) + 30;
+            y = Math.random() * (chunkSize - 60) + 30;
+
+            // Check if the position is valid (not in a wall)
+            if (!isCollidingAt(x, y, mazeChunks[chunkId])) {
+                validPosition = true;
+            }
+        }
+
+        if (validPosition) {
+            resources.push({
+                type: 'water',
+                x: x,
+                y: y,
+                value: 60 + Math.random() * 40 // Hydration value
+            });
+        }
+    }
+
+    // Store the resources for this chunk
+    resourceSpawns[chunkId] = resources;
+
+    // Store in the database for persistence
+    await room.collection('resources').create({
+        id: chunkId,
+        resources: resources
+    });
 }
+
+// ... existing code ...
 
 async function loadChunk(x, y) {
     const chunkId = `${x},${y}`;
-    
+
     // Check if the chunk is already loaded
     if (mazeChunks[chunkId]) {
         return mazeChunks[chunkId];
     }
-    
+
     // Try to get the chunk from the database
     let chunks = room.collection('maze_chunk').filter({ id: chunkId }).getList();
-    
+
     if (chunks.length === 0) {
         // Chunk doesn't exist yet, create it
         const newChunk = await generateMazeChunk(x, y);
@@ -185,9 +274,8 @@ async function loadChunk(x, y) {
             exits: newChunk.exits,
             walls: newChunk.walls
         });
-        
+
         mazeChunks[chunkId] = newChunk;
-        return newChunk;
     } else {
         // Chunk exists, load it
         const chunkData = chunks[0];
@@ -197,534 +285,584 @@ async function loadChunk(x, y) {
             exits: chunkData.exits,
             walls: chunkData.walls
         };
-        return mazeChunks[chunkId];
     }
-}
 
-async function generateMazeChunk(x, y) {
-    // Get adjacent chunks to ensure exits align
-    const adjacentChunks = {
-        north: await getAdjacentChunk(x, y-1),
-        east: await getAdjacentChunk(x+1, y),
-        south: await getAdjacentChunk(x, y+1),
-        west: await getAdjacentChunk(x-1, y)
-    };
-    
-    // Calculate exits based on adjacent chunks
-    const exits = {
-        north: adjacentChunks.north ? adjacentChunks.north.exits.south : Math.random() > 0.25,
-        east: adjacentChunks.east ? adjacentChunks.east.exits.west : Math.random() > 0.25,
-        south: adjacentChunks.south ? adjacentChunks.south.exits.north : Math.random() > 0.25,
-        west: adjacentChunks.west ? adjacentChunks.west.exits.east : Math.random() > 0.25
-    };
-    
-    // Special case: ensure the spawn chunk (0,0) has all exits open
-    if (x === 0 && y === 0) {
-        exits.north = true;
-        exits.east = true;
-        exits.south = true;
-        exits.west = true;
+    // Load or generate resources for the chunk
+    let resourceData = room.collection('resources').filter({ id: chunkId }).getList();
+    if (resourceData.length === 0) {
+        await generateResourcesForChunk(x, y);
     } else {
-        // Handle the 1/16 chance of blocking a second exit, but only if more than one exit is open
-        const openExitCount = Object.values(exits).filter(Boolean).length;
-        if (openExitCount > 2 && Math.random() < 0.0625) {
-            // Block a second random exit
-            const openExits = Object.keys(exits).filter(dir => exits[dir]);
-            if (openExits.length > 0) {
-                const randomExit = openExits[Math.floor(Math.random() * openExits.length)];
-                exits[randomExit] = false;
-            }
-        }
+        resourceSpawns[chunkId] = resourceData[0].resources;
     }
-    
-    // Generate walls for the maze chunk
-    const walls = generateWalls(exits);
-    
-    return {
-        x,
-        y,
-        exits,
-        walls
-    };
+
+    return mazeChunks[chunkId];
 }
 
-async function getAdjacentChunk(x, y) {
-    const chunkId = `${x},${y}`;
-    
-    // Check if the chunk is already loaded
-    if (mazeChunks[chunkId]) {
-        return mazeChunks[chunkId];
-    }
-    
-    // Try to get the chunk from the database
-    let chunks = room.collection('maze_chunk').filter({ id: chunkId }).getList();
-    
-    if (chunks.length === 0) {
-        return null;
-    } else {
-        const chunkData = chunks[0];
-        mazeChunks[chunkId] = {
-            x,
-            y,
-            exits: chunkData.exits,
-            walls: chunkData.walls
-        };
-        return mazeChunks[chunkId];
-    }
-}
-
-function generateWalls(exits) {
-    // Create a grid of walls for the maze chunk
-    const gridSize = chunkSize / tileSize;
-    const walls = [];
-    
-    // Create a simple maze layout with the specified exits
-    for (let y = 0; y < gridSize; y++) {
-        for (let x = 0; x < gridSize; x++) {
-            // Border walls except at exits
-            if (y === 0 && !(x === Math.floor(gridSize/2) && exits.north)) {
-                walls.push({x, y, dir: 'horizontal'});
-            }
-            
-            if (y === gridSize-1 && !(x === Math.floor(gridSize/2) && exits.south)) {
-                walls.push({x, y: y+1, dir: 'horizontal'});
-            }
-            
-            if (x === 0 && !(y === Math.floor(gridSize/2) && exits.west)) {
-                walls.push({x, y, dir: 'vertical'});
-            }
-            
-            if (x === gridSize-1 && !(y === Math.floor(gridSize/2) && exits.east)) {
-                walls.push({x: x+1, y, dir: 'vertical'});
-            }
-            
-            // Internal walls - random maze generation
-            if (x < gridSize-1 && y > 0 && Math.random() > 0.7) {
-                walls.push({x: x+1, y, dir: 'vertical'});
-            }
-            
-            if (y < gridSize-1 && x > 0 && Math.random() > 0.7) {
-                walls.push({x, y: y+1, dir: 'horizontal'});
-            }
-        }
-    }
-    
-    return walls;
-}
-
-function handlePresenceUpdate(presence) {
-    // Update other players' rats
-    for (const clientId in presence) {
-        if (clientId !== room.clientId && presence[clientId].ratState) {
-            if (!playerRats[clientId]) {
-                // New player joined
-                playerRats[clientId] = {
-                    ...presence[clientId].ratState,
-                    image: new Image()
-                };
-                playerRats[clientId].image.src = presence[clientId].ratImageUrl;
-            } else {
-                // Update existing player but keep the image object
-                const currentImage = playerRats[clientId].image;
-                playerRats[clientId] = {
-                    ...presence[clientId].ratState,
-                    image: currentImage
-                };
-            }
-        }
-    }
-    
-    // Remove disconnected players
-    for (const clientId in playerRats) {
-        if (!presence[clientId]) {
-            delete playerRats[clientId];
-        }
-    }
-    
-    // Update player list UI
-    updatePlayerList();
-}
-
-function updatePlayerList() {
-    const container = document.getElementById('players-container');
-    container.innerHTML = '<h3>Rats in Maze</h3>';
-    
-    // Add current player
-    const myUsername = room.peers[room.clientId].username;
-    const myDiv = document.createElement('div');
-    myDiv.className = 'player';
-    myDiv.innerHTML = `
-        <img class="player-avatar" src="https://images.websim.com/avatar/${myUsername}" alt="${myUsername}">
-        <span>${myUsername} (You)</span>
-    `;
-    container.appendChild(myDiv);
-    
-    // Add other players
-    for (const clientId in playerRats) {
-        if (room.peers[clientId]) {
-            const username = room.peers[clientId].username;
-            const playerDiv = document.createElement('div');
-            playerDiv.className = 'player';
-            playerDiv.innerHTML = `
-                <img class="player-avatar" src="https://images.websim.com/avatar/${username}" alt="${username}">
-                <span>${username}</span>
-            `;
-            container.appendChild(playerDiv);
-        }
-    }
-}
-
-function updateRatStats() {
-    document.getElementById('energy-fill').style.width = `${myRat.energy}%`;
-    document.getElementById('hydration-fill').style.width = `${myRat.hydration}%`;
-    document.getElementById('alertness-fill').style.width = `${myRat.alertness}%`;
-}
-
-function gameLoop(timestamp) {
-    if (!lastTimestamp) lastTimestamp = timestamp;
-    const deltaTime = (timestamp - lastTimestamp) / 1000; // Convert to seconds
-    lastTimestamp = timestamp;
-    
-    // Update rat state
-    updateRat(deltaTime);
-    
-    // Render the game
-    render();
-    
-    // Request next frame
-    requestAnimationFrame(gameLoop);
-}
+// ... existing code ...
 
 function updateRat(deltaTime) {
     // Update rat stats over time
     myRat.energy = Math.max(10, myRat.energy - deltaTime * 2); // Slowly decrease energy
     myRat.hydration = Math.max(10, myRat.hydration - deltaTime * 3); // Decrease hydration faster
     myRat.alertness = Math.max(10, myRat.alertness - deltaTime * 5); // Alertness decreases quickly
-    
+
     // Calculate movement speed based on rat stats
     let speed = calculateRatSpeed();
-    
-    // Handle keyboard input for movement
-    let dx = 0, dy = 0;
-    
-    if (keysPressed['ArrowUp'] || keysPressed['w']) dy -= speed * deltaTime;
-    if (keysPressed['ArrowDown'] || keysPressed['s']) dy += speed * deltaTime;
-    if (keysPressed['ArrowLeft'] || keysPressed['a']) dx -= speed * deltaTime;
-    if (keysPressed['ArrowRight'] || keysPressed['d']) dx += speed * deltaTime;
-    
-    // Check for collisions before moving
-    if (dx !== 0 || dy !== 0) {
-        const newX = myRat.x + dx;
-        const newY = myRat.y + dy;
-        
-        // Check if the new position is within a wall
-        if (!isColliding(newX, newY)) {
-            myRat.x = newX;
-            myRat.y = newY;
-        } else {
-            // Handle collision - slide along walls
-            if (dx !== 0 && !isColliding(myRat.x, newY)) {
-                myRat.y = newY;
-            } else if (dy !== 0 && !isColliding(newX, myRat.y)) {
-                myRat.x = newX;
-            }
-        }
-        
-        // Check if we need to move to a new chunk
-        checkChunkTransition();
-        
-        // Update presence if rat moved
-        if (Date.now() - myRat.lastUpdate > 50) { // Throttle updates
-            myRat.lastUpdate = Date.now();
-            room.updatePresence({
-                ratState: {
-                    x: myRat.x,
-                    y: myRat.y,
-                    chunkX: myRat.chunkX,
-                    chunkY: myRat.chunkY,
-                    energy: myRat.energy,
-                    hydration: myRat.hydration,
-                    alertness: myRat.alertness
-                },
-                ratImageUrl: myRatImage.src
-            });
-        }
+
+    if (myRat.aiEnabled) {
+        // AI controls the rat
+        updateRatAI(deltaTime, speed);
+    } else {
+        // Handle keyboard input for movement
+        let dx = 0, dy = 0;
+
+        if (keysPressed['ArrowUp'] || keysPressed['w']) dy -= speed * deltaTime;
+        if (keysPressed['ArrowDown'] || keysPressed['s']) dy += speed * deltaTime;
+        if (keysPressed['ArrowLeft'] || keysPressed['a']) dx -= speed * deltaTime;
+        if (keysPressed['ArrowRight'] || keysPressed['d']) dx += speed * deltaTime;
+
+        moveRat(dx, dy);
     }
-    
+
+    // Check for resource collection
+    checkResourceCollection();
+
     // Update camera position to follow the rat
     cameraX = myRat.x + chunkSize * myRat.chunkX - canvas.width / 2;
     cameraY = myRat.y + chunkSize * myRat.chunkY - canvas.height / 2;
-    
+
     // Update UI
     updateRatStats();
 }
 
-function calculateRatSpeed() {
-    // Base speed
-    let speed = 100;
-    
-    // Adjust based on energy
-    if (myRat.energy < 30) {
-        speed *= 0.7; // Slower when low energy
-    } else if (myRat.energy > 70) {
-        speed *= 1.2; // Faster when high energy
-    }
-    
-    // Adjust based on hydration
-    if (myRat.hydration < 30) {
-        speed *= 0.8; // Slower when dehydrated
-    }
-    
-    // Adjust based on alertness
-    if (myRat.alertness > 70) {
-        speed *= 1.5; // Much faster when startled/alert
-    }
-    
-    return speed;
-}
+function moveRat(dx, dy) {
+    // Only proceed if there's movement
+    if (dx === 0 && dy === 0) return;
 
-async function checkChunkTransition() {
-    let newChunkX = myRat.chunkX;
-    let newChunkY = myRat.chunkY;
-    let reposition = false;
-    
-    // Check if rat moved out of current chunk
-    if (myRat.x < 0) {
-        newChunkX--;
-        myRat.x += chunkSize;
-        reposition = true;
-    } else if (myRat.x > chunkSize) {
-        newChunkX++;
-        myRat.x -= chunkSize;
-        reposition = true;
-    }
-    
-    if (myRat.y < 0) {
-        newChunkY--;
-        myRat.y += chunkSize;
-        reposition = true;
-    } else if (myRat.y > chunkSize) {
-        newChunkY++;
-        myRat.y -= chunkSize;
-        reposition = true;
-    }
-    
-    // If we moved to a new chunk, load it
-    if (reposition) {
-        await loadChunk(newChunkX, newChunkY);
-        myRat.chunkX = newChunkX;
-        myRat.chunkY = newChunkY;
-        
-        // Ensure the rat is placed in a valid position in the new chunk
-        const chunkId = `${newChunkX},${newChunkY}`;
-        if (mazeChunks[chunkId]) {
-            const validPosition = findValidRatPosition(mazeChunks[chunkId], myRat.x, myRat.y);
-            myRat.x = validPosition.x;
-            myRat.y = validPosition.y;
-        }
-        
-        // Also load adjacent chunks for seamless transitions
-        loadChunk(newChunkX - 1, newChunkY);
-        loadChunk(newChunkX + 1, newChunkY);
-        loadChunk(newChunkX, newChunkY - 1);
-        loadChunk(newChunkX, newChunkY + 1);
-    }
-}
+    const newX = myRat.x + dx;
+    const newY = myRat.y + dy;
 
-function findValidRatPosition(chunk, startX, startY) {
-    // If the starting position is valid, use it
-    if (!isCollidingAt(startX, startY, chunk)) {
-        return { x: startX, y: startY };
-    }
-    
-    // If not, use breadth-first search to find a valid position
-    const queue = [];
-    const visited = new Set();
-    const startKey = `${Math.floor(startX/10)},${Math.floor(startY/10)}`;
-    
-    // Start with the center of the chunk as an alternative
-    queue.push({ x: chunkSize/2, y: chunkSize/2 });
-    
-    // Try positions near the exits
-    if (chunk.exits.north) queue.push({ x: chunkSize/2, y: tileSize + RAT_SIZE });
-    if (chunk.exits.south) queue.push({ x: chunkSize/2, y: chunkSize - tileSize - RAT_SIZE });
-    if (chunk.exits.east) queue.push({ x: chunkSize - tileSize - RAT_SIZE, y: chunkSize/2 });
-    if (chunk.exits.west) queue.push({ x: tileSize + RAT_SIZE, y: chunkSize/2 });
-    
-    // Then try the original position
-    queue.push({ x: startX, y: startY });
-    visited.add(startKey);
-    
-    // Check grid points in the chunk (10px resolution to speed up search)
-    const gridSize = chunkSize / 10;
-    for (let y = 0; y < gridSize; y++) {
-        for (let x = 0; x < gridSize; x++) {
-            const posX = x * 10 + 5;
-            const posY = y * 10 + 5;
-            const key = `${x},${y}`;
-            
-            if (!visited.has(key)) {
-                queue.push({ x: posX, y: posY });
-                visited.add(key);
-            }
-        }
-    }
-    
-    // Process the queue
-    for (const pos of queue) {
-        if (!isCollidingAt(pos.x, pos.y, chunk)) {
-            return pos;
-        }
-    }
-    
-    // If no valid position found, return the center of the chunk as a last resort
-    return { x: chunkSize/2, y: chunkSize/2 };
-}
-
-function isCollidingAt(x, y, chunk) {
-    if (!chunk) return true; // Consider out of bounds as a collision
-    
-    // Check collision with walls
-    for (const wall of chunk.walls) {
-        const wallX = wall.x * tileSize;
-        const wallY = wall.y * tileSize;
-        
-        if (wall.dir === 'horizontal') {
-            // Horizontal wall segment
-            if (y + RAT_SIZE/2 > wallY - 2 && y - RAT_SIZE/2 < wallY + 2 &&
-                x + RAT_SIZE/2 > wallX && x - RAT_SIZE/2 < wallX + tileSize) {
-                return true;
-            }
+    // Check if the new position is within a wall
+    if (!isColliding(newX, newY)) {
+        myRat.x = newX;
+        myRat.y = newY;
+        myRat.aiState.stuckTimer = 0; // Reset stuck timer when moving successfully
+    } else {
+        // Handle collision - slide along walls
+        if (dx !== 0 && !isColliding(myRat.x, newY)) {
+            myRat.y = newY;
+            myRat.aiState.stuckTimer = 0;
+        } else if (dy !== 0 && !isColliding(newX, myRat.y)) {
+            myRat.x = newX;
+            myRat.aiState.stuckTimer = 0;
         } else {
-            // Vertical wall segment
-            if (x + RAT_SIZE/2 > wallX - 2 && x - RAT_SIZE/2 < wallX + 2 &&
-                y + RAT_SIZE/2 > wallY && y - RAT_SIZE/2 < wallY + tileSize) {
-                return true;
+            // Increment stuck timer if we couldn't move at all
+            myRat.aiState.stuckTimer += 1;
+        }
+    }
+
+    // Check if we need to move to a new chunk
+    checkChunkTransition();
+
+    // Update presence if rat moved
+    if (Date.now() - myRat.lastUpdate > 50) { // Throttle updates
+        myRat.lastUpdate = Date.now();
+        room.updatePresence({
+            ratState: {
+                x: myRat.x,
+                y: myRat.y,
+                chunkX: myRat.chunkX,
+                chunkY: myRat.chunkY,
+                energy: myRat.energy,
+                hydration: myRat.hydration,
+                alertness: myRat.alertness,
+                aiEnabled: myRat.aiEnabled
+            },
+            ratImageUrl: myRatImage.src
+        });
+    }
+}
+
+function updateRatAI(deltaTime, speed) {
+    // Decide what to do based on current needs and surroundings
+    const now = Date.now();
+
+    // Make a new decision every 2 seconds, or when the goal has been achieved
+    if (now - myRat.aiState.lastDecisionTime > 2000 || goalAchieved() || myRat.aiState.stuckTimer > 30) {
+        // Make a decision based on current needs
+        decideNextGoal();
+        myRat.aiState.lastDecisionTime = now;
+    }
+
+    // Execute the current goal
+    let dx = 0, dy = 0;
+
+    switch (myRat.aiState.currentGoal) {
+        case 'wander':
+            // Basic wandering behavior - randomly change direction occasionally
+            if (Math.random() < 0.02 || myRat.aiState.stuckTimer > 10) {
+                myRat.aiState.wanderDirection = Math.random() * Math.PI * 2;
+                myRat.aiState.stuckTimer = 0;
+            }
+
+            // Move in the current wander direction
+            dx = Math.cos(myRat.aiState.wanderDirection) * speed * deltaTime;
+            dy = Math.sin(myRat.aiState.wanderDirection) * speed * deltaTime;
+            break;
+
+        case 'seek_food':
+        case 'seek_water':
+            // If we have a target, move towards it
+            if (myRat.aiState.targetX !== null && myRat.aiState.targetY !== null) {
+                // Calculate global positions
+                const globalTargetX = myRat.aiState.targetX + myRat.aiState.targetChunkX * chunkSize;
+                const globalCurrentX = myRat.x + myRat.chunkX * chunkSize;
+                const globalTargetY = myRat.aiState.targetY + myRat.aiState.targetChunkY * chunkSize;
+                const globalCurrentY = myRat.y + myRat.chunkY * chunkSize;
+
+                // Calculate direction to target
+                const dirX = globalTargetX - globalCurrentX;
+                const dirY = globalTargetY - globalCurrentY;
+                const distance = Math.sqrt(dirX * dirX + dirY * dirY);
+
+                if (distance > 5) { // Only move if we're not already at the target
+                    dx = (dirX / distance) * speed * deltaTime;
+                    dy = (dirY / distance) * speed * deltaTime;
+                }
+            } else {
+                // No target, revert to wandering
+                myRat.aiState.currentGoal = 'wander';
+            }
+            break;
+
+        case 'flee':
+            // If we have a flee target, move away from it
+            if (myRat.aiState.fleeTarget) {
+                // Calculate direction away from the threat
+                const dirX = myRat.x - myRat.aiState.fleeTarget.x;
+                const dirY = myRat.y - myRat.aiState.fleeTarget.y;
+                const distance = Math.sqrt(dirX * dirX + dirY * dirY);
+
+                if (distance > 0) {
+                    dx = (dirX / distance) * speed * 1.5 * deltaTime; // Flee faster
+                    dy = (dirY / distance) * speed * 1.5 * deltaTime;
+                }
+
+                // If we've fled far enough, stop fleeing
+                if (distance > 300) {
+                    myRat.aiState.currentGoal = 'wander';
+                    myRat.aiState.fleeTarget = null;
+                }
+            } else {
+                // No flee target, revert to wandering
+                myRat.aiState.currentGoal = 'wander';
+            }
+            break;
+    }
+
+    // Move the rat according to the AI's decision
+    moveRat(dx, dy);
+}
+
+function goalAchieved() {
+    switch (myRat.aiState.currentGoal) {
+        case 'wander':
+            // Wandering doesn't have a completion condition
+            return false;
+
+        case 'seek_food':
+            // Goal is achieved if energy is high enough
+            return myRat.energy > 80;
+
+        case 'seek_water':
+            // Goal is achieved if hydration is high enough
+            return myRat.hydration > 80;
+
+        case 'flee':
+            // Flee until the flee target is null or we're far enough away
+            if (!myRat.aiState.fleeTarget) return true;
+
+            const dx = myRat.x - myRat.aiState.fleeTarget.x;
+            const dy = myRat.y - myRat.aiState.fleeTarget.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance > 300;
+
+        default:
+            return false;
+    }
+}
+
+function decideNextGoal() {
+    // Check for nearby threats first (high priority)
+    const nearbyThreats = findNearbyThreats();
+    if (nearbyThreats.length > 0 && myRat.alertness > 30) {
+        // Choose the closest threat to flee from
+        const closestThreat = nearbyThreats[0];
+        myRat.aiState.currentGoal = 'flee';
+        myRat.aiState.fleeTarget = closestThreat;
+        return;
+    }
+
+    // Check critical needs next
+    if (myRat.energy < 30) {
+        // Critical energy need - find food
+        const foodTarget = findNearestResource('food');
+        if (foodTarget) {
+            myRat.aiState.currentGoal = 'seek_food';
+            myRat.aiState.targetX = foodTarget.x;
+            myRat.aiState.targetY = foodTarget.y;
+            myRat.aiState.targetChunkX = foodTarget.chunkX;
+            myRat.aiState.targetChunkY = foodTarget.chunkY;
+            return;
+        }
+    }
+
+    if (myRat.hydration < 30) {
+        // Critical hydration need - find water
+        const waterTarget = findNearestResource('water');
+        if (waterTarget) {
+            myRat.aiState.currentGoal = 'seek_water';
+            myRat.aiState.targetX = waterTarget.x;
+            myRat.aiState.targetY = waterTarget.y;
+            myRat.aiState.targetChunkX = waterTarget.chunkX;
+            myRat.aiState.targetChunkY = waterTarget.chunkY;
+            return;
+        }
+    }
+
+    // Check moderate needs
+    if (myRat.energy < 50 && Math.random() < 0.7) {
+        // Moderate energy need - consider finding food
+        const foodTarget = findNearestResource('food');
+        if (foodTarget) {
+            myRat.aiState.currentGoal = 'seek_food';
+            myRat.aiState.targetX = foodTarget.x;
+            myRat.aiState.targetY = foodTarget.y;
+            myRat.aiState.targetChunkX = foodTarget.chunkX;
+            myRat.aiState.targetChunkY = foodTarget.chunkY;
+            return;
+        }
+    }
+
+    if (myRat.hydration < 50 && Math.random() < 0.7) {
+        // Moderate hydration need - consider finding water
+        const waterTarget = findNearestResource('water');
+        if (waterTarget) {
+            myRat.aiState.currentGoal = 'seek_water';
+            myRat.aiState.targetX = waterTarget.x;
+            myRat.aiState.targetY = waterTarget.y;
+            myRat.aiState.targetChunkX = waterTarget.chunkX;
+            myRat.aiState.targetChunkY = waterTarget.chunkY;
+            return;
+        }
+    }
+
+    // If we get here, just wander around
+    myRat.aiState.currentGoal = 'wander';
+    // Occasionally change wander direction
+    if (Math.random() < 0.3) {
+        myRat.aiState.wanderDirection = Math.random() * Math.PI * 2;
+    }
+}
+
+function findNearbyThreats() {
+    const threats = [];
+
+    // Check for other rats that are too close
+    for (const clientId in playerRats) {
+        const rat = playerRats[clientId];
+
+        // Calculate global positions
+        const globalRatX = rat.x + rat.chunkX * chunkSize;
+        const globalMyX = myRat.x + myRat.chunkX * chunkSize;
+        const globalRatY = rat.y + rat.chunkY * chunkSize;
+        const globalMyY = myRat.y + myRat.chunkY * chunkSize;
+
+        // Calculate distance
+        const dx = globalRatX - globalMyX;
+        const dy = globalRatY - globalMyY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        // If the rat is close and our alertness is high, consider it a threat
+        if (distance < 100) {
+            threats.push({
+                x: globalRatX,
+                y: globalRatY,
+                distance: distance
+            });
+        }
+    }
+
+    // Sort threats by distance
+    threats.sort((a, b) => a.distance - b.distance);
+
+    return threats;
+}
+
+function findNearestResource(type) {
+    let nearestResource = null;
+    let nearestDistance = Infinity;
+
+    // Check the current chunk and adjacent chunks
+    const chunksToCheck = [
+        `${myRat.chunkX},${myRat.chunkY}`,
+        `${myRat.chunkX-1},${myRat.chunkY}`,
+        `${myRat.chunkX+1},${myRat.chunkY}`,
+        `${myRat.chunkX},${myRat.chunkY-1}`,
+        `${myRat.chunkX},${myRat.chunkY+1}`
+    ];
+
+    for (const chunkId of chunksToCheck) {
+        if (resourceSpawns[chunkId]) {
+            const resources = resourceSpawns[chunkId].filter(r => r.type === type);
+            const [chunkX, chunkY] = chunkId.split(',').map(Number);
+
+            for (const resource of resources) {
+                // Calculate global positions
+                const globalResourceX = resource.x + chunkX * chunkSize;
+                const globalMyX = myRat.x + myRat.chunkX * chunkSize;
+                const globalResourceY = resource.y + chunkY * chunkSize;
+                const globalMyY = myRat.y + myRat.chunkY * chunkSize;
+
+                // Calculate distance
+                const dx = globalResourceX - globalMyX;
+                const dy = globalResourceY - globalMyY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearestResource = {
+                        x: resource.x,
+                        y: resource.y,
+                        chunkX: chunkX,
+                        chunkY: chunkY,
+                        value: resource.value
+                    };
+                }
             }
         }
     }
-    
-    // Also check if position is out of bounds for the chunk
-    if (x < 0 || x > chunkSize || y < 0 || y > chunkSize) {
-        return true;
+
+    // If we found a resource, remember its location
+    if (nearestResource) {
+        const resourceKey = `${type}_${nearestResource.chunkX}_${nearestResource.chunkY}_${Math.floor(nearestResource.x)}_${Math.floor(nearestResource.y)}`;
+        myRat.aiState.memoryMap[resourceKey] = {
+            type: type,
+            x: nearestResource.x,
+            y: nearestResource.y,
+            chunkX: nearestResource.chunkX,
+            chunkY: nearestResource.chunkY,
+            lastSeen: Date.now()
+        };
     }
-    
-    return false;
+
+    return nearestResource;
 }
 
-function isColliding(x, y) {
+function checkResourceCollection() {
     const currentChunkId = `${myRat.chunkX},${myRat.chunkY}`;
-    const chunk = mazeChunks[currentChunkId];
-    return isCollidingAt(x, y, chunk);
+    const resources = resourceSpawns[currentChunkId];
+
+    if (!resources) return;
+
+    // Check for collision with resources
+    for (let i = resources.length - 1; i >= 0; i--) {
+        const resource = resources[i];
+        const dx = myRat.x - resource.x;
+        const dy = myRat.y - resource.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        // If the rat is close enough to the resource, collect it
+        if (distance < RAT_SIZE / 2 + 15) { // Resource radius is approximately 15
+            if (resource.type === 'food') {
+                // Collect food (cheese) - increase energy
+                myRat.energy = Math.min(100, myRat.energy + resource.value);
+
+                // Remove the resource
+                resources.splice(i, 1);
+
+                // Update the database
+                room.collection('resources').update(currentChunkId, {
+                    resources: resources
+                });
+
+                // Reset target if this was our target
+                if (myRat.aiState.currentGoal === 'seek_food' && 
+                    myRat.aiState.targetX === resource.x && 
+                    myRat.aiState.targetY === resource.y && 
+                    myRat.aiState.targetChunkX === myRat.chunkX && 
+                    myRat.aiState.targetChunkY === myRat.chunkY) {
+                    myRat.aiState.targetX = null;
+                    myRat.aiState.targetY = null;
+                }
+            } else if (resource.type === 'water') {
+                // Collect water - increase hydration
+                myRat.hydration = Math.min(100, myRat.hydration + resource.value);
+
+                // Remove the resource
+                resources.splice(i, 1);
+
+                // Update the database
+                room.collection('resources').update(currentChunkId, {
+                    resources: resources
+                });
+
+                // Reset target if this was our target
+                if (myRat.aiState.currentGoal === 'seek_water' && 
+                    myRat.aiState.targetX === resource.x && 
+                    myRat.aiState.targetY === resource.y && 
+                    myRat.aiState.targetChunkX === myRat.chunkX && 
+                    myRat.aiState.targetChunkY === myRat.chunkY) {
+                    myRat.aiState.targetX = null;
+                    myRat.aiState.targetY = null;
+                }
+            }
+        }
+    }
 }
+
+// ... existing code ...
 
 function render() {
     // Clear canvas
     ctx.fillStyle = '#222';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
+
     // Render visible chunks
     const centerChunkX = myRat.chunkX;
     const centerChunkY = myRat.chunkY;
-    
+
     // Render nearby chunks (3x3 grid centered on current chunk)
     for (let y = centerChunkY - 1; y <= centerChunkY + 1; y++) {
         for (let x = centerChunkX - 1; x <= centerChunkX + 1; x++) {
             const chunkId = `${x},${y}`;
             if (mazeChunks[chunkId]) {
                 renderChunk(mazeChunks[chunkId]);
+
+                // Render resources in this chunk
+                if (resourceSpawns[chunkId]) {
+                    renderResources(resourceSpawns[chunkId], x, y);
+                }
             }
         }
     }
-    
+
     // Render all rats
     renderRats();
+
+    // Render AI debug info if enabled
+    if (myRat.aiEnabled) {
+        renderAIDebugInfo();
+    }
 }
 
-function renderChunk(chunk) {
-    const offsetX = chunk.x * chunkSize - cameraX;
-    const offsetY = chunk.y * chunkSize - cameraY;
-    
-    // Draw chunk background
-    ctx.fillStyle = '#333';
-    ctx.fillRect(offsetX, offsetY, chunkSize, chunkSize);
-    
-    // Draw chunk border for debugging
-    ctx.strokeStyle = '#444';
-    ctx.strokeRect(offsetX, offsetY, chunkSize, chunkSize);
-    
-    // Draw walls
-    ctx.strokeStyle = '#777';
-    ctx.lineWidth = 3;
-    
-    for (const wall of chunk.walls) {
-        ctx.beginPath();
-        if (wall.dir === 'horizontal') {
-            ctx.moveTo(offsetX + wall.x * tileSize, offsetY + wall.y * tileSize);
-            ctx.lineTo(offsetX + (wall.x + 1) * tileSize, offsetY + wall.y * tileSize);
-        } else {
-            ctx.moveTo(offsetX + wall.x * tileSize, offsetY + wall.y * tileSize);
-            ctx.lineTo(offsetX + wall.x * tileSize, offsetY + (wall.y + 1) * tileSize);
-        }
-        ctx.stroke();
-    }
-    
-    // Draw exit markers for debugging
-    const midPoint = chunkSize / 2;
-    ctx.fillStyle = '#4CAF50';
-    
-    if (chunk.exits.north) {
-        ctx.fillRect(offsetX + midPoint - 5, offsetY, 10, 10);
-    }
-    if (chunk.exits.east) {
-        ctx.fillRect(offsetX + chunkSize - 10, offsetY + midPoint - 5, 10, 10);
-    }
-    if (chunk.exits.south) {
-        ctx.fillRect(offsetX + midPoint - 5, offsetY + chunkSize - 10, 10, 10);
-    }
-    if (chunk.exits.west) {
-        ctx.fillRect(offsetX, offsetY + midPoint - 5, 10, 10);
-    }
-    
-    // Draw chunk coordinates for debugging
-    ctx.fillStyle = '#666';
-    ctx.font = '14px Arial';
-    ctx.fillText(`[${chunk.x},${chunk.y}]`, offsetX + 10, offsetY + 20);
-}
+function renderResources(resources, chunkX, chunkY) {
+    const offsetX = chunkX * chunkSize - cameraX;
+    const offsetY = chunkY * chunkSize - cameraY;
 
-function renderRats() {
-    // Render other player rats
-    for (const clientId in playerRats) {
-        const rat = playerRats[clientId];
-        if (rat.image && rat.image.complete) {
-            const x = rat.x + rat.chunkX * chunkSize - cameraX - RAT_SIZE/2;
-            const y = rat.y + rat.chunkY * chunkSize - cameraY - RAT_SIZE/2;
-            ctx.drawImage(rat.image, x, y, RAT_SIZE, RAT_SIZE);
-            
-            // Draw username above the rat
-            if (room.peers[clientId]) {
-                ctx.fillStyle = 'white';
-                ctx.font = '12px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText(room.peers[clientId].username, x + RAT_SIZE/2, y - 5);
+    for (const resource of resources) {
+        const x = offsetX + resource.x - 15; // Resource is approximately 30x30
+        const y = offsetY + resource.y - 15;
+
+        if (resource.type === 'food') {
+            // Draw cheese
+            if (cheeseImage && cheeseImage.complete) {
+                ctx.drawImage(cheeseImage, x, y, 30, 30);
+            } else {
+                // Fallback if image not loaded
+                ctx.fillStyle = '#ffc107';
+                ctx.beginPath();
+                ctx.arc(x + 15, y + 15, 15, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        } else if (resource.type === 'water') {
+            // Draw water drop
+            if (waterImage && waterImage.complete) {
+                ctx.drawImage(waterImage, x, y, 30, 30);
+            } else {
+                // Fallback if image not loaded
+                ctx.fillStyle = '#2196f3';
+                ctx.beginPath();
+                ctx.arc(x + 15, y + 15, 15, 0, Math.PI * 2);
+                ctx.fill();
             }
         }
     }
-    
-    // Render the player's rat (don't need to store image in myRat object)
-    if (myRatImage && myRatImage.complete) {
-        const x = myRat.x - cameraX - RAT_SIZE/2;
-        const y = myRat.y - cameraY - RAT_SIZE/2;
-        ctx.drawImage(myRatImage, x, y, RAT_SIZE, RAT_SIZE);
-        
-        // Draw username above the rat
-        if (room.peers[room.clientId]) {
-            ctx.fillStyle = 'white';
-            ctx.font = '12px Arial';
-            ctx.textAlign = 'center';
-            ctx.fillText(room.peers[room.clientId].username, x + RAT_SIZE/2, y - 5);
-        }
+}
+
+function renderAIDebugInfo() {
+    // Draw the current goal text
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(20, canvas.height - 50, 200, 30);
+    ctx.fillStyle = 'white';
+    ctx.font = '14px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`AI Goal: ${myRat.aiState.currentGoal}`, 30, canvas.height - 30);
+
+    // Draw target indicator if there is one
+    if ((myRat.aiState.currentGoal === 'seek_food' || myRat.aiState.currentGoal === 'seek_water') && 
+        myRat.aiState.targetX !== null && myRat.aiState.targetY !== null) {
+
+        // Calculate screen position of target
+        const targetScreenX = myRat.aiState.targetX + myRat.aiState.targetChunkX * chunkSize - cameraX;
+        const targetScreenY = myRat.aiState.targetY + myRat.aiState.targetChunkY * chunkSize - cameraY;
+
+        // Draw line to target
+        ctx.strokeStyle = myRat.aiState.currentGoal === 'seek_food' ? '#ffc107' : '#2196f3';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(canvas.width / 2, canvas.height / 2);
+        ctx.lineTo(targetScreenX, targetScreenY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw target circle
+        ctx.fillStyle = myRat.aiState.currentGoal === 'seek_food' ? 'rgba(255, 193, 7, 0.5)' : 'rgba(33, 150, 243, 0.5)';
+        ctx.beginPath();
+        ctx.arc(targetScreenX, targetScreenY, 15, 0, Math.PI * 2);
+        ctx.fill();
     }
+
+    // Draw flee direction if fleeing
+    if (myRat.aiState.currentGoal === 'flee' && myRat.aiState.fleeTarget) {
+        // Calculate screen position of flee target
+        const fleeScreenX = myRat.aiState.fleeTarget.x - cameraX;
+        const fleeScreenY = myRat.aiState.fleeTarget.y - cameraY;
+
+        // Draw line from flee target
+        ctx.strokeStyle = '#f44336';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(fleeScreenX, fleeScreenY);
+        ctx.lineTo(canvas.width / 2, canvas.height / 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw warning symbol at flee target
+        ctx.fillStyle = 'rgba(244, 67, 54, 0.5)';
+        ctx.beginPath();
+        ctx.arc(fleeScreenX, fleeScreenY, 15, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+// ... existing code ...
+
+function gameLoop(timestamp) {
+    if (!lastTimestamp) lastTimestamp = timestamp;
+    const deltaTime = (timestamp - lastTimestamp) / 1000; // Convert to seconds
+    lastTimestamp = timestamp;
+
+    // Update rat state
+    updateRat(deltaTime);
+
+    // Render the game
+    render();
+
+    // Request next frame
+    requestAnimationFrame(gameLoop);
 }
 
 // Start the game when the page loads
