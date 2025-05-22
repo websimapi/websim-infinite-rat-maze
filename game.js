@@ -35,7 +35,6 @@ async function initGame() {
         y: 0,
         chunkX: 0,
         chunkY: 0,
-        image: myRatImage,
         energy: 100,
         hydration: 100,
         alertness: 50,
@@ -48,7 +47,15 @@ async function initGame() {
     
     // Update presence with initial rat state
     room.updatePresence({
-        ratState: myRat,
+        ratState: {
+            x: myRat.x,
+            y: myRat.y,
+            chunkX: myRat.chunkX,
+            chunkY: myRat.chunkY,
+            energy: myRat.energy,
+            hydration: myRat.hydration,
+            alertness: myRat.alertness
+        },
         ratImageUrl: myRatImage.src
     });
     
@@ -312,10 +319,11 @@ function handlePresenceUpdate(presence) {
                 };
                 playerRats[clientId].image.src = presence[clientId].ratImageUrl;
             } else {
-                // Update existing player
+                // Update existing player but keep the image object
+                const currentImage = playerRats[clientId].image;
                 playerRats[clientId] = {
                     ...presence[clientId].ratState,
-                    image: playerRats[clientId].image
+                    image: currentImage
                 };
             }
         }
@@ -632,7 +640,7 @@ function renderRats() {
         }
     }
     
-    // Render the player's rat
+    // Render the player's rat (don't need to store image in myRat object)
     if (myRatImage && myRatImage.complete) {
         const x = myRat.x - cameraX - RAT_SIZE/2;
         const y = myRat.y - cameraY - RAT_SIZE/2;
@@ -650,4 +658,3 @@ function renderRats() {
 
 // Start the game when the page loads
 window.addEventListener('load', initGame);
-
